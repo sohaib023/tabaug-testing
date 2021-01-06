@@ -12,8 +12,9 @@ import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
-from libs.eval_data_parser import GenerateTFRecord
 
+from truthpy.Document import Document
+from augmentation.augmentor import translate_ocr, get_bounded_ocr
 
 def apply_ocr(path, image):
     """
@@ -34,13 +35,13 @@ def apply_ocr(path, image):
 
         print("OCR start")
         ocr = pytesseract.image_to_data(
-            image, output_type=pytesseract.Output.DICT, config="--oem 1"
+            image, output_type=pytesseract.Output.DICT
         )
         print("OCR end")
 
         bboxes = []
         for i in range(len(ocr["conf"])):
-            if ocr["level"][i] > 4 and ocr["text"][i].strip() != "":
+            if ocr["level"][i] > 4 and ocr["text"][i].strip() != "" and ocr['conf'][i] > 50:
                 bboxes.append(
                     [
                         len(ocr["text"][i]),
@@ -72,6 +73,46 @@ def apply_ocr(path, image):
 
         return bboxes
 
+def remove_background(image):
+    image2 = np.copy(image)
+    kernel = np.ones((1, 5), np.uint8)
+    lines1 = np.copy(image)
+    lines1 = cv2.dilate(lines1, kernel, iterations=17)
+    lines1 = cv2.erode(lines1, kernel, iterations=17)
+
+    kernel = np.ones((5, 1), np.uint8)
+    lines2 = np.copy(image)
+    lines2 = cv2.dilate(lines2, kernel, iterations=17)
+    lines2 = cv2.erode(lines2, kernel, iterations=17)
+
+    lines2 = np.uint8(np.clip(np.int16(lines2) - np.int16(lines1) + 255, 0, 255))
+    lines = np.uint8(np.clip((255 - np.int16(lines1)) + (255 - np.int16(lines2)), 0, 255))
+
+    bg_removed = np.uint8(np.clip(np.int16(image2) + np.int16(lines), 0, 255))
+
+    return bg_removed
+
+
+
+def extract_lines(image, x=17, y=17):
+    # image = cv2.erode(image.copy(), np.ones((3,3), np.uint8), iterations=1)
+
+    kernel = np.ones((1, 5), np.uint8)
+    lines1 = np.copy(image)
+    lines1 = cv2.dilate(lines1, kernel, iterations=x)
+    lines1 = cv2.erode(lines1, kernel, iterations=x)
+
+    kernel = np.ones((5, 1), np.uint8)
+    lines2 = np.copy(image)
+    lines2 = cv2.dilate(lines2, kernel, iterations=y)
+    lines2 = cv2.erode(lines2, kernel, iterations=y)
+
+    lines2, lines1 = np.uint8(np.clip(np.int16(lines2) - np.int16(lines1) + 255, 0, 255)), \
+                     np.uint8(np.clip(np.int16(lines1) - np.int16(lines2) + 255, 0, 255))
+    lines = np.uint8(np.clip((255 - np.int16(lines1)) + (255 - np.int16(lines2)), 0, 255))
+    return lines
+
+
 
 def process_files(image_dir, xml_dir, ocr_dir, out_dir):
     """
@@ -90,193 +131,62 @@ def process_files(image_dir, xml_dir, ocr_dir, out_dir):
     ]
     files.sort()
 
-    col_merge_counter = 0
-    row_merge_counter = 0
-
     for ii, file in enumerate(files):
+        try:
+            image_file = os.path.join(image_dir, file + ".png")
+            xml_file = os.path.join(xml_dir, file + ".xml")
+            ocr_file = os.path.join(ocr_dir, file + ".pkl")
 
-        image_file = os.path.join(image_dir, file + ".png")
-        xml_file = os.path.join(xml_dir, file + ".xml")
-        ocr_file = os.path.join(ocr_dir, file + ".pkl")
+            img = cv2.imread(image_file, cv2.IMREAD_GRAYSCALE)
 
-        img = cv2.imread(image_file, cv2.IMREAD_GRAYSCALE)
+            # tmp = img.copy()
+            # tmp = cv2.GaussianBlur(tmp,(5,5),0)
+            # tmp = cv2.adaptiveThreshold(tmp, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            # lines = extract_lines(tmp)
+            # lines = cv2.dilate(lines, np.ones((3,3), np.uint8), iterations=1)
+            # ocr_img = np.uint8(np.clip(np.int16(img) + np.int16(lines), 0, 255))
 
-        ocr = GenerateTFRecord.apply_ocr(ocr_file, Image.fromarray(img))
+            ocr = apply_ocr(ocr_file, Image.fromarray(img))
 
-        ocr_mask = np.zeros_like(img)
-        for word in ocr:
-            txt = word[1].translate(str.maketrans("", "", string.punctuation))
-            if len(txt.strip()) > 0:
-                cv2.rectangle(ocr_mask, (word[2], word[3]), (word[4], word[5]), 255, -1)
+            if (
+                os.path.exists(image_file)
+                and os.path.exists(xml_file)
+                and os.path.exists(ocr_file)
+            ):
+                print("[", ii, "/", len(files), "]", "Processing: ", file)
+                doc = Document(xml_file)
 
-        if (
-            os.path.exists(image_file)
-            and os.path.exists(xml_file)
-            and os.path.exists(ocr_file)
-        ):
-            print("[", ii, "/", len(files), "]", "Processing: ", file)
-            tree = ElementTree.parse(xml_file)
-            root = tree.getroot()
-            for i, obj in enumerate(root.findall(".//Table")):
-                table_name = file + "_" + str(i)
+                # cv2.imshow("img", cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2)))
+                # cv2.imshow("ocr", cv2.resize(ocr_img, (img.shape[1] // 2, img.shape[0] // 2)))
+                # cv2.waitKey(0)
+                # exit(0)
 
-                columns = []
-                rows = []
-                rect = [
-                    int(obj.attrib["x0"]),
-                    int(obj.attrib["y0"]),
-                    int(obj.attrib["x1"]),
-                    int(obj.attrib["y1"]),
-                ]
+                for i, obj in enumerate(doc.tables):
+                    table_name = file + "_" + str(i)
 
-                img_crop = img[rect[1] : rect[3], rect[0] : rect[2]]
-                ocr_mask_crop = ocr_mask[rect[1] : rect[3], rect[0] : rect[2]]
-                ocr_mask_crop2 = ocr_mask_crop.copy()
+                    img_crop = img[obj.y1: obj.y2, obj.x1: obj.x2]
+                    table_ocr = translate_ocr(
+                        get_bounded_ocr(ocr, (obj.x1, obj.y1), (obj.x2, obj.y2)), 
+                        (-obj.x1, -obj.y1)
+                    )
+                    obj.move(-obj.x1, -obj.y1)
 
-                col_spans = []
-                row_spans = []
-                for col in obj.findall(".//Column"):
-                    columns.append(int(col.attrib["x0"]) - rect[0])
-                for row in obj.findall(".//Row"):
-                    rows.append(int(row.attrib["y0"]) - rect[1])
-                for cell in obj.findall(".//Cell"):
-                    if (
-                        cell.attrib["endCol"] != cell.attrib["startCol"]
-                        or cell.attrib["endRow"] != cell.attrib["startRow"]
-                    ):
-                        x0, y0, x1, y1 = map(
-                            int,
-                            [
-                                cell.attrib["x0"],
-                                cell.attrib["y0"],
-                                cell.attrib["x1"],
-                                cell.attrib["y1"],
-                            ],
-                        )
-                        x0 -= rect[0] - 10
-                        y0 -= rect[1] - 10
-                        x1 -= rect[0] + 10
-                        y1 -= rect[1] + 10
+                    cv2.imwrite(
+                        os.path.join(out_dir, "images", table_name + ".png"), img_crop
+                    )
 
-                        cell_mask = ocr_mask[y0:y1, x0:x1]
-                        row_mask = ocr_mask[y0:y1, :]
-                        col_mask = ocr_mask[:, x0:x1]
+                    dummy_doc = Document()
+                    dummy_doc.tables.append(obj)
+                    dummy_doc.input_file = table_name + '.png'
+                    dummy_doc.write_to(os.path.join(out_dir, "gt", table_name + '.xml'))
 
-                        indices = np.where(cell_mask != 0)
-                        row_indices = np.where(row_mask != 0)
-                        col_indices = np.where(col_mask != 0)
-
-                        if len(indices[0]) != 0:
-                            x_min = np.amin(indices[1]) + x0
-                            x_max = np.amax(indices[1]) + x0
-                            y_min = np.amin(indices[0]) + y0
-                            y_max = np.amax(indices[0]) + y0
-
-                            if cell.attrib["endCol"] != cell.attrib["startCol"]:
-                                col_spans.append(
-                                    (
-                                        np.amin(col_indices[1]) + x0,
-                                        np.amin(indices[0]) + y0,
-                                        np.amax(col_indices[1]) + x0,
-                                        np.amax(indices[0]) + y0,
-                                    )
-                                )
-                                col_merge_counter += 1
-
-                            if cell.attrib["endRow"] != cell.attrib["startRow"]:
-                                row_spans.append(
-                                    (
-                                        np.amin(indices[1]) + x0,
-                                        np.amin(row_indices[0]) + y0,
-                                        np.amax(indices[1]) + x0,
-                                        np.amax(row_indices[0]) + y0,
-                                    )
-                                )
-                                row_merge_counter += 1
-
-                        cv2.rectangle(ocr_mask_crop2, (x0, y0), (x1, y1), 0, -1)
-
-                bboxes_table = []
-                for box in ocr:
-                    coords = box[2:]
-                    intrsct = [
-                        max(coords[0], rect[0]),
-                        max(coords[1], rect[1]),
-                        min(coords[2], rect[2]),
-                        min(coords[3], rect[3]),
-                    ]
-                    w = intrsct[2] - intrsct[0]
-                    h = intrsct[3] - intrsct[1]
-
-                    w2 = coords[2] - coords[0]
-                    h2 = coords[3] - coords[1]
-                    if w > 0 and h > 0 and w * h > 0.5 * w2 * h2:
-                        box = list(box)
-                        box[2] -= rect[0]
-                        box[3] -= rect[1]
-                        box[4] -= rect[0]
-                        box[5] -= rect[1]
-                        bboxes_table.append(box)
-                ocr = [box for box in ocr if box not in bboxes_table]
-
-                img_crop_masked = img_crop.copy()
-                img_crop_masked[ocr_mask_crop == 0] = 255
-
-                col_gt_mask = np.zeros_like(img_crop)
-                row_gt_mask = np.zeros_like(img_crop)
-
-                non_zero_rows = np.append(
-                    np.where(np.count_nonzero(ocr_mask_crop2, axis=1) != 0)[0],
-                    [0, img_crop.shape[0]],
-                )
-                non_zero_cols = np.append(
-                    np.where(np.count_nonzero(ocr_mask_crop2, axis=0) != 0)[0],
-                    [0, img_crop.shape[1]],
-                )
-
-                for col in columns:
-                    if col == 0 or col == img_crop.shape[1]:
-                        continue
-                    diff = non_zero_cols - col
-                    left = min(-diff[diff < 0]) + 1
-                    right = min(diff[diff > 0])
-                    col_gt_mask[:, col - left : col + right] = 255
-
-                for row in rows:
-                    if row == 0 or row == img_crop.shape[0]:
-                        continue
-                    diff = non_zero_rows - row
-                    above = min(-diff[diff < 0]) + 1
-                    below = min(diff[diff > 0])
-                    row_gt_mask[row - above : row + below, :] = 255
-
-                cv2.imwrite(
-                    os.path.join(out_dir, "table_images", table_name + ".png"), img_crop
-                )
-
-                with open(
-                    os.path.join(
-                        out_dir, "table_split_labels", table_name + "_row.txt"
-                    ),
-                    "w",
-                ) as f:
-                    for i in row_gt_mask[:, 0]:
-                        f.write(str(i) + "\n")
-
-                with open(
-                    os.path.join(
-                        out_dir, "table_split_labels", table_name + "_col.txt"
-                    ),
-                    "w",
-                ) as f:
-                    for i in col_gt_mask[0, :]:
-                        f.write(str(i) + "\n")
-
-                with open(
-                    os.path.join(out_dir, "table_ocr", table_name + ".pkl"), "wb"
-                ) as f:
-                    pickle.dump(bboxes_table, f)
-
+                    with open(
+                        os.path.join(out_dir, "ocr", table_name + ".pkl"), "wb"
+                    ) as f:
+                        pickle.dump(table_ocr, f)
+        except Exception as e:
+            print(file)
+            print(e)
 
 if __name__ == "__main__":
     _parser = argparse.ArgumentParser()
@@ -319,8 +229,8 @@ if __name__ == "__main__":
     args = _parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    os.makedirs(os.path.join(args.out_dir, "table_images"), exist_ok=True)
-    os.makedirs(os.path.join(args.out_dir, "table_split_labels"), exist_ok=True)
-    os.makedirs(os.path.join(args.out_dir, "table_ocr"), exist_ok=True)
+    os.makedirs(os.path.join(args.out_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(args.out_dir, "gt"), exist_ok=True)
+    os.makedirs(os.path.join(args.out_dir, "ocr"), exist_ok=True)
 
     process_files(args.image_dir, args.xml_dir, args.ocr_dir, args.out_dir)

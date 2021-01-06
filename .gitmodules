@@ -1,0 +1,6 @@
+[submodule "Table-Augmentation"]
+	path = Table-Augmentation
+	url = https://github.com/sohaib023/Table-Augmentation.git
+[submodule "augmentation"]
+	path = augmentation
+	url = https://github.com/sohaib023/Table-Augmentation.git

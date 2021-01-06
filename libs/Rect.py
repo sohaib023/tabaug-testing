@@ -37,7 +37,7 @@ class Rect:
         x2 = min(a.x2, b.x2)
         y2 = min(a.y2, b.y2)
         if x1 < x2 and y1 < y2:
-            return Rect(x1, y1, x2 - x1, y2 - y1)
+            return Rect(x1, y1, x1, y1)
         else:
             return type(self)(0, 0, 0, 0)
 
@@ -50,7 +50,7 @@ class Rect:
         x2 = max(a.x2, b.x2)
         y2 = max(a.y2, b.y2)
         if x1 < x2 and y1 < y2:
-            return type(self)(x1, y1, x2 - x1, y2 - y1)
+            return type(self)(x1, y1, x1, y1)
 
     def contains(self, p1):
         if p1[0] < self.x2 and p1[0] > self.x1:
