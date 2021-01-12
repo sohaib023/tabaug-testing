@@ -71,6 +71,7 @@ class SplitTableDataset(torch.utils.data.Dataset):
             txt = word[1].translate(str.maketrans("", "", string.punctuation))
             if len(txt.strip()) > 0:
                 cv2.rectangle(ocr_mask, (word[2], word[3]), (word[4], word[5]), 255, -1)
+        ocr_mask_row = ocr_mask.copy()
         # cv2.imshow("mask", ocr_mask)
 
         columns = [col.x1 for col in table.gtCols]
@@ -78,15 +79,17 @@ class SplitTableDataset(torch.utils.data.Dataset):
 
         for row in table.gtCells:
             for cell in row:
-                if cell.startRow != cell.endRow or cell.startCol != cell.endCol:
-                    x0, y0, x1, y1 = tuple(cell)
+                x0, y0, x1, y1 = tuple(cell)
+                if cell.startRow != cell.endRow:
+                    cv2.rectangle(ocr_mask_row, (x0, y0), (x1, y1), 0, -1)
+                if cell.startCol != cell.endCol:
                     cv2.rectangle(ocr_mask, (x0, y0), (x1, y1), 0, -1)
 
         col_gt_mask = np.zeros_like(img[0, :])
         row_gt_mask = np.zeros_like(img[:, 0])
 
         non_zero_rows = np.append(
-            np.where(np.count_nonzero(ocr_mask, axis=1) != 0)[0],
+            np.where(np.count_nonzero(ocr_mask_row, axis=1) != 0)[0],
             [0, img.shape[0]],
         )
         non_zero_cols = np.append(

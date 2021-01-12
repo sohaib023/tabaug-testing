@@ -79,7 +79,7 @@ class GenerateTFRecord:
             shape=(self.num_of_max_vertices, self.num_data_dims), dtype=np.int64
         )
         lengths_arr = np.array(lengths_arr).reshape(len(lengths_arr), -1)
-        sample_out = np.array(np.concatenate((arr[:, 2:], lengths_arr), axis=1))
+        sample_out = np.array(np.concatenate((arr[:, 2:6], lengths_arr), axis=1))
         vertex_features[:no_of_words, :] = sample_out
 
         vertex_text = np.zeros(
