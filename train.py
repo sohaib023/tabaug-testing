@@ -106,6 +106,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Apply augmentation on the tables"
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue training from \"last_model.pth\" in output_weight_path."
+    )
+    parser.add_argument(
+        "--load_model_from",
+        help="Path to model file to fine-tune from."
+    )
 
     configs = parser.parse_args()
     configs.__dict__['lr_step'] = 15
@@ -116,6 +125,8 @@ if __name__ == "__main__":
     print("Output Weights Path:\t", configs.output_weight_path)
     print("Validation Split:\t", configs.validation_split)
     print("Number of Epochs:\t", configs.num_epochs)
+    print("Continue:\t", configs.resume)
+    print("Fine-tune from:\t", configs.load_model_from)
     # print("Save Checkpoint Frequency:", configs.save_every)
     print("Log after:\t", configs.log_every)
     print("Validate after:\t", configs.val_every)
@@ -125,6 +136,9 @@ if __name__ == "__main__":
     print("Augmentation:\t", configs.augment_tables)
     print(65 * "=")
 
+    if configs.resume and configs.load_model_from:
+        print("Error! Flags \"resume\" and \"load_model_from\" cannot both be set at the same time.")
+        exit(0)
 
     batch_size = 1
     learning_rate = configs.learning_rate
@@ -133,11 +147,6 @@ if __name__ == "__main__":
 
     train_images_path = configs.train_images_dir
     train_labels_path = configs.train_labels_dir
-
-    os.makedirs(MODEL_STORE_PATH)
-
-    with open(os.path.join(MODEL_STORE_PATH, "config.json"), 'w') as fp:
-        json.dump(configs.__dict__, fp, sort_keys=True, indent=4)
 
     cprint("Loading dataset...", "blue", attrs=["bold"])
     dataset = SplitTableDataset(
@@ -184,6 +193,27 @@ if __name__ == "__main__":
         optimizer, step_size=configs.lr_step, gamma=configs.decay_rate
     )
 
+    if configs.resume and os.path.exists(MODEL_STORE_PATH):
+        print("==============Resuming training from last checkpoint==============")
+        checkpoint = torch.load(os.path.join(MODEL_STORE_PATH, "last_model.pth"))
+        lr_scheduler.load_state_dict(checkpoint['scheduler'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        best_val_loss = checkpoint['best_val_loss']
+    else:
+        os.makedirs(MODEL_STORE_PATH)
+
+        with open(os.path.join(MODEL_STORE_PATH, "config.json"), 'w') as fp:
+            json.dump(configs.__dict__, fp, sort_keys=True, indent=4)
+        start_epoch = 0
+        best_val_loss = 10000.
+
+    if configs.load_model_from:
+        print("=========Loading model from {}=========".format(configs.load_model_from))
+        checkpoint = torch.load(configs.load_model_from)
+        model.load_state_dict(checkpoint['model_state_dict'])
+
     num_epochs = configs.num_epochs
 
     # create the summary writer
@@ -204,8 +234,7 @@ if __name__ == "__main__":
         val_batch = None
 
     time_stamp = time.time()
-    best_val_loss = 10000.
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
 
         val_loss_list = []
         for i, (images, targets, img_path, _, _) in enumerate(train_loader):
@@ -302,9 +331,13 @@ if __name__ == "__main__":
         print(65 * "=")
         print("Saving model weights at epoch", epoch + 1)
 
+        lr_scheduler.step()
+
         torch.save(
             {
-                "epoch": epoch,
+                "epoch": epoch + 1,
+                "best_val_loss": best_val_loss,
+                "scheduler": lr_scheduler.state_dict(),
                 # "iteration": step + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
@@ -319,7 +352,7 @@ if __name__ == "__main__":
             best_val_loss = sum(val_loss_list) / len(val_loss_list)   
             torch.save(
                 {
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     # "iteration": step + 1,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
@@ -332,5 +365,4 @@ if __name__ == "__main__":
 
         torch.cuda.empty_cache()
 
-        lr_scheduler.step()
 
