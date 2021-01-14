@@ -74,8 +74,8 @@ class SplitTableDataset(torch.utils.data.Dataset):
         ocr_mask_row = ocr_mask.copy()
         # cv2.imshow("mask", ocr_mask)
 
-        columns = [col.x1 for col in table.gtCols]
-        rows = [row.y1 for row in table.gtRows]
+        columns = [1] + [col.x1 for col in table.gtCols] + [img.shape[1] - 1]
+        rows = [1] + [row.y1 for row in table.gtRows] + [img.shape[0] - 1]
 
         for row in table.gtCells:
             for cell in row:
@@ -90,27 +90,67 @@ class SplitTableDataset(torch.utils.data.Dataset):
 
         non_zero_rows = np.append(
             np.where(np.count_nonzero(ocr_mask_row, axis=1) != 0)[0],
-            [0, img.shape[0]],
+            [-1, img.shape[0]],
         )
         non_zero_cols = np.append(
             np.where(np.count_nonzero(ocr_mask, axis=0) != 0)[0],
-            [0, img.shape[1]],
+            [-1, img.shape[1]],
         )
+        zero_rows = np.where(np.count_nonzero(ocr_mask_row, axis=1) == 0)[0]
+        zero_cols = np.where(np.count_nonzero(ocr_mask, axis=0) == 0)[0]
 
         for col in columns:
             if col == 0 or col == img.shape[1]:
                 continue
             diff = non_zero_cols - col
-            left = min(-diff[diff < 0]) + 1
+            left = min(-diff[diff < 0]) - 1
             right = min(diff[diff > 0])
+
+            # Re-align the seperators passing through an ocr bounding box
+            if left == 0 and right == 1:
+                if col == 1 or col == img.shape[1] - 1:
+                    continue
+                diff_zeros = zero_cols - col
+                left_align = min(-diff_zeros[diff_zeros < 0])
+                right_align = min(diff_zeros[diff_zeros > 0])
+
+                if min(left_align, right_align) < 20:
+                    if left_align < right_align:
+                        col -= left_align
+                    else:
+                        col += right_align
+
+                    diff = non_zero_cols - col
+                    left = min(-diff[diff < 0]) - 1
+                    right = min(diff[diff > 0])
+
             col_gt_mask[col - left : col + right] = 255
 
         for row in rows:
             if row == 0 or row == img.shape[0]:
                 continue
             diff = non_zero_rows - row
-            above = min(-diff[diff < 0]) + 1
+            above = min(-diff[diff < 0]) - 1
             below = min(diff[diff > 0])
+
+            # Re-align the seperators passing through an ocr bounding box
+            if above == 0 and below == 1:
+                if row == 1 or row == img.shape[0] - 1:
+                    continue
+                diff_zeros = zero_rows - row
+                above_align = min(-diff_zeros[diff_zeros < 0])
+                below_align = min(diff_zeros[diff_zeros > 0])
+
+                if min(above_align, below_align) < 20:
+                    if above_align < below_align:
+                        row -= above_align
+                    else:
+                        row += below_align
+
+                    diff = non_zero_rows - row
+                    above = min(-diff[diff < 0]) - 1
+                    below = min(diff[diff > 0])
+
             row_gt_mask[row - above : row + below] = 255
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32), row_gt_mask, col_gt_mask
 
@@ -127,7 +167,9 @@ class SplitTableDataset(torch.utils.data.Dataset):
         C, H, W = image.shape
         image = resize_image(image, fix_resize=self.fix_resize)
 
-        # cv2.imshow("image", image.transpose((1, 2, 0)))
+        # image_write = image.copy()
+        # image_write = (image_write.transpose((1, 2, 0))*255).astype(np.uint8)
+        # cv2.imwrite("debug/{}_image.png".format(self.filenames[idx]), image_write)
 
         image = normalize_numpy_image(image)
 
@@ -139,9 +181,9 @@ class SplitTableDataset(torch.utils.data.Dataset):
         row_label = cv2.resize(row_label[np.newaxis, :], (o_H, 1), interpolation=cv2.INTER_NEAREST)
         col_label = cv2.resize(col_label[np.newaxis, :], (o_W, 1), interpolation=cv2.INTER_NEAREST)
 
-        # cv2.imshow("row", np.repeat(row_label.transpose((1, 0)), 50, axis=1))
-        # cv2.imshow("col", np.repeat(col_label, 50, axis=0))
-        # cv2.waitKey(0)
+        # image_write[row_label[0] == 255, :, :] = [255, 0, 255]
+        # image_write[:, col_label[0] == 255, :] = [255, 0, 255]
+        # cv2.imwrite("debug/{}_labels.png".format(self.filenames[idx]), image_write)
 
         row_label[row_label > 0] = 1
         col_label[col_label > 0] = 1
